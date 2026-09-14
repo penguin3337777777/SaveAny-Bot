@@ -7,13 +7,14 @@ import (
 	"path"
 	"strings"
 	"sync"
-	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/log"
 	"github.com/gotd/td/tg"
+
 	"github.com/krau/SaveAny-Bot/common/i18n"
 	"github.com/krau/SaveAny-Bot/common/i18n/i18nk"
+	"github.com/krau/SaveAny-Bot/common/progressmsg"
 	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
@@ -26,10 +27,10 @@ type ProgressTracker interface {
 }
 
 type Progress struct {
+	editor       *progressmsg.Editor
 	MessageID    int
 	ChatID       int64
 	updateMu     sync.Mutex
-	lastUpdateAt time.Time
 	lastText     string
 	done         bool
 	skippedFiles []string
@@ -42,11 +43,10 @@ type renderedBatchMessage struct {
 }
 
 const (
-	progressRenderInterval = time.Second
-	maxVisibleActiveItems  = 5
-	progressBarWidth       = 10
-	maxDisplayNameRunes    = 36
-	maxDisplayErrorRunes   = 240
+	maxVisibleActiveItems = 5
+	progressBarWidth      = 10
+	maxDisplayNameRunes   = 36
+	maxDisplayErrorRunes  = 240
 )
 
 func (p *Progress) OnStart(ctx context.Context, info TaskInfo) {
@@ -58,11 +58,11 @@ func (p *Progress) OnProgress(ctx context.Context, info TaskInfo) {
 }
 
 func (p *Progress) OnStateChange(ctx context.Context, info TaskInfo) {
-	p.render(ctx, info, true)
+	p.render(ctx, info, false)
 }
 
 func (p *Progress) OnUploadStart(ctx context.Context, info TaskInfo, _ int64) {
-	p.render(ctx, info, true)
+	p.render(ctx, info, false)
 }
 
 func (p *Progress) OnUploadProgress(ctx context.Context, info TaskInfo, _, _ int64) {
@@ -75,10 +75,6 @@ func (p *Progress) render(ctx context.Context, info TaskInfo, priority bool) {
 	if p.done {
 		return
 	}
-	now := time.Now()
-	if !priority && !p.lastUpdateAt.IsZero() && now.Sub(p.lastUpdateAt) < progressRenderInterval {
-		return
-	}
 	message := buildBatchProgressMessage(info, p.skippedFiles, visibleActiveItems())
 	if message.Err != nil {
 		log.FromContext(ctx).Errorf("Failed to render batch progress message: %v", message.Err)
@@ -88,8 +84,7 @@ func (p *Progress) render(ctx context.Context, info TaskInfo, priority bool) {
 		return
 	}
 	p.lastText = message.Text
-	p.lastUpdateAt = now
-	p.editMessage(ctx, info.TaskID(), message, true)
+	p.editMessage(ctx, info.TaskID(), message, true, priority)
 }
 
 func (p *Progress) OnDone(ctx context.Context, info TaskInfo, err error) {
@@ -105,20 +100,19 @@ func (p *Progress) OnDone(ctx context.Context, info TaskInfo, err error) {
 		return
 	}
 	p.lastText = message.Text
-	p.editMessage(ctx, info.TaskID(), message, false)
+	p.editMessage(ctx, info.TaskID(), message, false, true)
 }
 
-func (p *Progress) editMessage(ctx context.Context, taskID string, message renderedBatchMessage, cancellable bool) {
+func (p *Progress) editMessage(ctx context.Context, taskID string, message renderedBatchMessage, cancellable, force bool) {
 	if message.Err != nil {
 		log.FromContext(ctx).Errorf("Failed to render batch progress message: %v", message.Err)
 		return
 	}
-	req := buildBatchEditMessageRequest(p.MessageID, taskID, message, cancellable)
-	if ext := tgutil.ExtFromContext(ctx); ext != nil {
-		if _, err := ext.EditMessage(p.ChatID, req); err != nil {
-			log.FromContext(ctx).Errorf("Failed to edit batch progress message: %v", err)
-		}
+	if p.editor == nil {
+		p.editor = progressmsg.New(ctx, p.ChatID, config.ProgressInterval())
 	}
+	req := buildBatchEditMessageRequest(p.MessageID, taskID, message, cancellable)
+	p.editor.Submit(req, force, !cancellable)
 }
 
 func buildBatchEditMessageRequest(messageID int, taskID string, message renderedBatchMessage, cancellable bool) *tg.MessagesEditMessageRequest {

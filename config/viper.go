@@ -11,22 +11,33 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/duke-git/lancet/v2/slice"
-	"github.com/krau/SaveAny-Bot/config/storage"
 	"github.com/spf13/viper"
 	"golang.org/x/net/proxy"
+
+	"github.com/krau/SaveAny-Bot/config/storage"
 )
 
+type progressConfig struct {
+	UpdateIntervalSeconds int `toml:"update_interval_seconds" mapstructure:"update_interval_seconds" json:"update_interval_seconds"`
+}
+
+// ProgressInterval is the minimum interval between ordinary Telegram progress edits.
+func ProgressInterval() time.Duration {
+	return time.Duration(max(1, C().Progress.UpdateIntervalSeconds)) * time.Second
+}
+
 type Config struct {
-	Lang         string      `toml:"lang" mapstructure:"lang" json:"lang"`
-	Workers      int         `toml:"workers" mapstructure:"workers"`
-	Retry        int         `toml:"retry" mapstructure:"retry"`
-	NoCleanCache bool        `toml:"no_clean_cache" mapstructure:"no_clean_cache" json:"no_clean_cache"`
-	Threads      int         `toml:"threads" mapstructure:"threads" json:"threads"`
-	Stream       bool        `toml:"stream" mapstructure:"stream" json:"stream"`
-	Proxy        string      `toml:"proxy" mapstructure:"proxy" json:"proxy"`
-	Log          logConfig   `toml:"log" mapstructure:"log" json:"log"`
-	Aria2        aria2Config `toml:"aria2" mapstructure:"aria2" json:"aria2"`
-	API          apiConfig   `toml:"api" mapstructure:"api" json:"api"`
+	Progress     progressConfig `toml:"progress" mapstructure:"progress" json:"progress"`
+	Lang         string         `toml:"lang" mapstructure:"lang" json:"lang"`
+	Workers      int            `toml:"workers" mapstructure:"workers"`
+	Retry        int            `toml:"retry" mapstructure:"retry"`
+	NoCleanCache bool           `toml:"no_clean_cache" mapstructure:"no_clean_cache" json:"no_clean_cache"`
+	Threads      int            `toml:"threads" mapstructure:"threads" json:"threads"`
+	Stream       bool           `toml:"stream" mapstructure:"stream" json:"stream"`
+	Proxy        string         `toml:"proxy" mapstructure:"proxy" json:"proxy"`
+	Log          logConfig      `toml:"log" mapstructure:"log" json:"log"`
+	Aria2        aria2Config    `toml:"aria2" mapstructure:"aria2" json:"aria2"`
+	API          apiConfig      `toml:"api" mapstructure:"api" json:"api"`
 
 	Cache    cacheConfig             `toml:"cache" mapstructure:"cache" json:"cache"`
 	Users    []userConfig            `toml:"users" mapstructure:"users" json:"users"`
@@ -125,11 +136,13 @@ func Init(ctx context.Context, configFile ...string) error {
 		"cache.max_cost":     1e6,
 
 		// Telegram
-		"telegram.app_id":          1025907,
-		"telegram.app_hash":        "452b0359b988148995f22ff0f4229750",
-		"telegram.rpc_retry":       5,
-		"telegram.userbot.enable":  false,
-		"telegram.userbot.session": "data/usersession.db",
+		"telegram.download_pool_size":      8,
+		"progress.update_interval_seconds": 15,
+		"telegram.app_id":                  1025907,
+		"telegram.app_hash":                "452b0359b988148995f22ff0f4229750",
+		"telegram.rpc_retry":               5,
+		"telegram.userbot.enable":          false,
+		"telegram.userbot.session":         "data/usersession.db",
 
 		// 临时目录
 		"temp.base_path": "cache/",
@@ -178,6 +191,8 @@ func Init(ctx context.Context, configFile ...string) error {
 		storageNames[storage.GetName()] = struct{}{}
 	}
 
+	cfg.Telegram.DownloadPoolSize = max(1, cfg.Telegram.DownloadPoolSize)
+	cfg.Progress.UpdateIntervalSeconds = max(1, cfg.Progress.UpdateIntervalSeconds)
 	if cfg.Workers < 1 {
 		cfg.Workers = 1
 	}

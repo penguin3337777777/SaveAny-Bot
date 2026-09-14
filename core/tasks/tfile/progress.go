@@ -11,11 +11,13 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/gotd/td/tg"
+
 	"github.com/krau/SaveAny-Bot/common/i18n"
 	"github.com/krau/SaveAny-Bot/common/i18n/i18nk"
+	"github.com/krau/SaveAny-Bot/common/progressmsg"
 	"github.com/krau/SaveAny-Bot/common/utils/dlutil"
-	"github.com/krau/SaveAny-Bot/common/utils/progressutil"
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
+	"github.com/krau/SaveAny-Bot/config"
 )
 
 type ProgressTracker interface {
@@ -33,6 +35,10 @@ type UploadProgressTracker interface {
 }
 
 type Progress struct {
+	editor            *progressmsg.Editor
+	done              bool
+	downloadedBytes   int64
+	lastText          string
 	MessageID         int
 	ChatID            int64
 	start             time.Time
@@ -46,10 +52,8 @@ type Progress struct {
 }
 
 const (
-	uploadProgressMinInterval = time.Second
-	uploadProgressMaxInterval = 3 * time.Second
-	singleProgressBarWidth    = 10
-	maxSingleErrorRunes       = 240
+	singleProgressBarWidth = 10
+	maxSingleErrorRunes    = 240
 )
 
 type singleProgressPhase int
@@ -69,22 +73,29 @@ type renderedSingleMessage struct {
 func (p *Progress) OnStart(ctx context.Context, info TaskInfo) {
 	p.updateMu.Lock()
 	defer p.updateMu.Unlock()
+	if p.done {
+		return
+	}
 	p.start = time.Now()
 	p.lastUpdatePercent.Store(0)
-	p.lastUpdateAt.Store(0)
+	p.lastUpdateAt.Store(p.start.UnixNano())
 	p.uploadAttempt = 0
 	p.uploadedBytes = 0
 	p.actualSize = 0
 	p.hasActualSize = false
 	log.FromContext(ctx).Debugf("Progress tracking started for message %d in chat %d", p.MessageID, p.ChatID)
-	p.editMessage(ctx, info.TaskID(), buildSingleProgressMessage(info, singlePhaseDownloading, 0, info.FileSize(), 0, 0), true)
+	p.editMessage(ctx, info.TaskID(), buildSingleProgressMessage(info, singlePhaseDownloading, 0, info.FileSize(), 0, 0), true, true)
 }
 
 func (p *Progress) OnProgress(ctx context.Context, info TaskInfo, downloaded, total int64) {
 	p.updateMu.Lock()
 	defer p.updateMu.Unlock()
+	if p.done || downloaded < p.downloadedBytes {
+		return
+	}
+	p.downloadedBytes = downloaded
 	now := time.Now()
-	elapsed := uploadProgressMaxInterval
+	elapsed := config.ProgressInterval()
 	if lastUpdateAt := p.lastUpdateAt.Load(); lastUpdateAt > 0 {
 		elapsed = now.Sub(time.Unix(0, lastUpdateAt))
 	}
@@ -93,9 +104,6 @@ func (p *Progress) OnProgress(ctx context.Context, info TaskInfo, downloaded, to
 	}
 	if total > 0 {
 		percent := int32((downloaded * 100) / total)
-		if p.lastUpdatePercent.Load() == percent {
-			return
-		}
 		p.lastUpdatePercent.Store(percent)
 	}
 	p.lastUpdateAt.Store(now.UnixNano())
@@ -107,19 +115,19 @@ func (p *Progress) OnProgress(ctx context.Context, info TaskInfo, downloaded, to
 		total,
 		dlutil.GetSpeed(downloaded, p.start),
 		0,
-	), true)
+	), true, false)
 }
 
 func shouldUpdateSingleDownloadProgress(total, downloaded int64, lastPercent int, elapsed time.Duration) bool {
-	if total > 0 {
-		return progressutil.ShouldUpdate(total, downloaded, lastPercent)
-	}
-	return downloaded > 0 && elapsed >= uploadProgressMaxInterval
+	return downloaded > 0 && elapsed >= config.ProgressInterval()
 }
 
 func (p *Progress) OnUploadStart(ctx context.Context, info TaskInfo, total int64) {
 	p.updateMu.Lock()
 	defer p.updateMu.Unlock()
+	if p.done {
+		return
+	}
 	p.start = time.Now()
 	p.lastUpdatePercent.Store(0)
 	p.lastUpdateAt.Store(p.start.UnixNano())
@@ -129,7 +137,7 @@ func (p *Progress) OnUploadStart(ctx context.Context, info TaskInfo, total int64
 	p.hasActualSize = true
 	log.FromContext(ctx).Debugf("Upload progress tracking started: %s", info.FileName())
 	phase := singleUploadPhase(p.uploadAttempt)
-	p.editMessage(ctx, info.TaskID(), buildSingleProgressMessage(info, phase, 0, total, 0, p.uploadAttempt), true)
+	p.editMessage(ctx, info.TaskID(), buildSingleProgressMessage(info, phase, 0, total, 0, p.uploadAttempt), true, true)
 }
 
 func (p *Progress) OnUploadProgress(ctx context.Context, info TaskInfo, uploaded, total int64) {
@@ -138,6 +146,9 @@ func (p *Progress) OnUploadProgress(ctx context.Context, info TaskInfo, uploaded
 	}
 	p.updateMu.Lock()
 	defer p.updateMu.Unlock()
+	if p.done {
+		return
+	}
 	if uploaded > total {
 		uploaded = total
 	}
@@ -164,27 +175,14 @@ func (p *Progress) OnUploadProgress(ctx context.Context, info TaskInfo, uploaded
 		total,
 		dlutil.GetSpeed(uploaded, p.start),
 		p.uploadAttempt,
-	), true)
+	), true, false)
 }
 
 func shouldUpdateUploadProgress(total, uploaded int64, lastPercent int, elapsed time.Duration) bool {
-	if total <= 0 || uploaded <= 0 {
+	if total <= 0 || uploaded <= 0 || elapsed < config.ProgressInterval() {
 		return false
 	}
-	if uploaded >= total {
-		return lastPercent < 100 && elapsed >= uploadProgressMinInterval
-	}
-	percent := int((uploaded * 100) / total)
-	if percent < lastPercent {
-		return false
-	}
-	if elapsed < uploadProgressMinInterval {
-		return false
-	}
-	if percent == lastPercent {
-		return elapsed >= uploadProgressMaxInterval
-	}
-	return progressutil.ShouldUpdate(total, uploaded, lastPercent) || elapsed >= uploadProgressMaxInterval
+	return int(uploaded*100/total) >= lastPercent && !(uploaded >= total && lastPercent >= 100)
 }
 
 func singleUploadPhase(attempt int) singleProgressPhase {
@@ -197,13 +195,17 @@ func singleUploadPhase(attempt int) singleProgressPhase {
 func (p *Progress) OnDone(ctx context.Context, info TaskInfo, err error) {
 	p.updateMu.Lock()
 	defer p.updateMu.Unlock()
+	if p.done {
+		return
+	}
+	p.done = true
 	if err != nil {
 		log.FromContext(ctx).Errorf("Progress error for file [%s]: %v", info.FileName(), err)
 	} else {
 		log.FromContext(ctx).Debugf("Progress done for file [%s]", info.FileName())
 	}
 
-	p.editMessage(ctx, info.TaskID(), buildSingleDoneMessage(info, p.doneSize(info), err), false)
+	p.editMessage(ctx, info.TaskID(), buildSingleDoneMessage(info, p.doneSize(info), err), false, true)
 }
 
 func (p *Progress) doneSize(info TaskInfo) int64 {
@@ -213,17 +215,20 @@ func (p *Progress) doneSize(info TaskInfo) int64 {
 	return max(info.FileSize(), 0)
 }
 
-func (p *Progress) editMessage(ctx context.Context, taskID string, message renderedSingleMessage, cancellable bool) {
+func (p *Progress) editMessage(ctx context.Context, taskID string, message renderedSingleMessage, cancellable, force bool) {
 	if message.Err != nil {
 		log.FromContext(ctx).Errorf("Failed to render file progress message: %v", message.Err)
 		return
 	}
-	req := buildSingleEditMessageRequest(p.MessageID, taskID, message, cancellable)
-	if ext := tgutil.ExtFromContext(ctx); ext != nil {
-		if _, err := ext.EditMessage(p.ChatID, req); err != nil {
-			log.FromContext(ctx).Errorf("Failed to edit file progress message: %v", err)
-		}
+	if message.Text == p.lastText && !force {
+		return
 	}
+	p.lastText = message.Text
+	if p.editor == nil {
+		p.editor = progressmsg.New(ctx, p.ChatID, config.ProgressInterval())
+	}
+	req := buildSingleEditMessageRequest(p.MessageID, taskID, message, cancellable)
+	p.editor.Submit(req, force, !cancellable)
 }
 
 func buildSingleEditMessageRequest(messageID int, taskID string, message renderedSingleMessage, cancellable bool) *tg.MessagesEditMessageRequest {

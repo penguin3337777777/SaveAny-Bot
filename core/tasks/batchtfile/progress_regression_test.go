@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/gotd/td/tg"
+
 	"github.com/krau/SaveAny-Bot/common/i18n"
+	"github.com/krau/SaveAny-Bot/common/progressmsg"
 	"github.com/krau/SaveAny-Bot/pkg/tfile"
 )
 
@@ -185,9 +187,6 @@ func TestDownloadProgressContinuesAfterUploadStarts(t *testing.T) {
 	started := time.Unix(100, 0)
 	task.markItemActive("downloading", false, started)
 	task.recordItemDownload("downloading", 50, started.Add(time.Second))
-	progress.updateMu.Lock()
-	progress.lastUpdateAt = time.Now().Add(-progressRenderInterval)
-	progress.updateMu.Unlock()
 	progress.OnProgress(t.Context(), task)
 
 	progress.updateMu.Lock()
@@ -332,4 +331,46 @@ func batchEntityCounts(entities []tg.MessageEntityClass) (bold, code, blockquote
 		}
 	}
 	return
+}
+
+func TestBatchStateChangesCoalescedAndFinalImmediate(t *testing.T) {
+	useProgressRegressionLocale(t)
+	for _, failure := range []error{nil, errors.New("failed"), context.Canceled} {
+		edits := make(chan string, 100)
+		progress := &Progress{editor: progressmsg.NewWithSender(t.Context(), 15*time.Second, func(_ context.Context, r *tg.MessagesEditMessageRequest) error { edits <- r.Message; return nil })}
+		task := newProgressRegressionTask(progress, progressRegressionFile{"one", 1000}, progressRegressionFile{"two", 1000})
+		progress.OnStart(t.Context(), task)
+		select {
+		case <-edits:
+		case <-time.After(time.Second):
+			t.Fatal("missing start")
+		}
+		var wg sync.WaitGroup
+		for n := range 100 {
+			wg.Go(func() {
+				task.recordItemUpload("one", int64(n), 1000, time.Now())
+				progress.OnStateChange(t.Context(), task)
+				progress.OnProgress(t.Context(), task)
+				progress.OnUploadStart(t.Context(), task, 1000)
+			})
+		}
+		wg.Wait()
+		select {
+		case <-edits:
+			t.Fatal("batch state changes bypassed interval")
+		case <-time.After(15 * time.Millisecond):
+		}
+		progress.OnDone(t.Context(), task, failure)
+		select {
+		case <-edits:
+		case <-time.After(time.Second):
+			t.Fatal("final throttled")
+		}
+		progress.OnStateChange(t.Context(), task)
+		select {
+		case <-edits:
+			t.Fatal("late progress replaced final")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }

@@ -10,6 +10,7 @@ import (
 )
 
 type TGFile interface {
+	DC() int
 	Location() tg.InputFileLocationClass
 	Dler() downloader.Client // witch client to use for downloading
 	Size() int64
@@ -23,12 +24,15 @@ type TGFileMessage interface {
 }
 
 type tgFile struct {
+	dc       int
 	location tg.InputFileLocationClass
 	size     int64
 	name     string
 	message  *tg.Message
 	dler     downloader.Client
 }
+
+func (f *tgFile) DC() int { return f.dc }
 
 func (f *tgFile) SetName(name string) {
 	f.name = name
@@ -92,7 +96,7 @@ func FromMedia(media tg.MessageMediaClass, client downloader.Client, opts ...TGF
 			client,
 			document.Size,
 			fileName,
-			opts...,
+			append([]TGFileOption{WithDC(document.DCID)}, opts...)...,
 		)
 		return file, nil
 	case *tg.MessageMediaPhoto:
@@ -123,7 +127,7 @@ func FromMedia(media tg.MessageMediaClass, client downloader.Client, opts ...TGF
 			client,
 			0, // Photo size is not available in InputPhotoFileLocation
 			fileName,
-			opts...,
+			append([]TGFileOption{WithDC(photo.DCID)}, opts...)...,
 		)
 		return file, nil
 	}
@@ -136,6 +140,7 @@ func FromMediaMessage(media tg.MessageMediaClass, client downloader.Client, msg 
 		return nil, err
 	}
 	return &tgFile{
+		dc:       file.DC(),
 		location: file.Location(),
 		dler:     file.Dler(),
 		size:     file.Size(),

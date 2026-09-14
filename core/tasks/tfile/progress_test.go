@@ -3,13 +3,18 @@ package tfile
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gotd/td/tg"
+
 	"github.com/krau/SaveAny-Bot/common/i18n"
+	"github.com/krau/SaveAny-Bot/common/progressmsg"
+	"github.com/krau/SaveAny-Bot/config"
 )
 
 type progressTestTaskInfo struct{}
@@ -31,14 +36,14 @@ func TestShouldUpdateUploadProgress(t *testing.T) {
 	}{
 		{name: "invalid total", total: 0, uploaded: 1, want: false},
 		{name: "no uploaded bytes", total: 100, uploaded: 0, want: false},
-		{name: "percentage threshold", total: 100 << 20, uploaded: 10 << 20, elapsed: uploadProgressMinInterval, want: true},
-		{name: "percentage threshold rate limited", total: 100 << 20, uploaded: 10 << 20, elapsed: uploadProgressMinInterval - time.Millisecond, want: false},
-		{name: "maximum time threshold", total: 100 << 20, uploaded: 1 << 20, elapsed: uploadProgressMaxInterval, want: true},
-		{name: "below thresholds", total: 100 << 20, uploaded: 1 << 20, elapsed: uploadProgressMaxInterval - time.Millisecond, want: false},
-		{name: "completion", total: 100, uploaded: 100, lastPercent: 99, elapsed: uploadProgressMinInterval, want: true},
-		{name: "completion rate limited", total: 100, uploaded: 100, lastPercent: 99, elapsed: uploadProgressMinInterval - time.Millisecond, want: false},
-		{name: "completion already reported", total: 100, uploaded: 100, lastPercent: 100, elapsed: uploadProgressMinInterval, want: false},
-		{name: "out of order callback", total: 100, uploaded: 40, lastPercent: 60, elapsed: uploadProgressMaxInterval, want: false},
+		{name: "percentage threshold", total: 100 << 20, uploaded: 10 << 20, elapsed: config.ProgressInterval(), want: true},
+		{name: "percentage threshold rate limited", total: 100 << 20, uploaded: 10 << 20, elapsed: config.ProgressInterval() - time.Millisecond, want: false},
+		{name: "maximum time threshold", total: 100 << 20, uploaded: 1 << 20, elapsed: config.ProgressInterval(), want: true},
+		{name: "below thresholds", total: 100 << 20, uploaded: 1 << 20, elapsed: config.ProgressInterval() - time.Millisecond, want: false},
+		{name: "completion", total: 100, uploaded: 100, lastPercent: 99, elapsed: config.ProgressInterval(), want: true},
+		{name: "completion rate limited", total: 100, uploaded: 100, lastPercent: 99, elapsed: config.ProgressInterval() - time.Millisecond, want: false},
+		{name: "completion already reported", total: 100, uploaded: 100, lastPercent: 100, elapsed: config.ProgressInterval(), want: false},
+		{name: "out of order callback", total: 100, uploaded: 40, lastPercent: 60, elapsed: config.ProgressInterval(), want: false},
 	}
 
 	for _, tt := range tests {
@@ -58,7 +63,7 @@ func TestUploadProgressConcurrentCallbacks(t *testing.T) {
 	const total = int64(100 << 20)
 
 	progress.OnUploadStart(ctx, info, total)
-	progress.lastUpdateAt.Store(time.Now().Add(-uploadProgressMaxInterval).UnixNano())
+	progress.lastUpdateAt.Store(time.Now().Add(-config.ProgressInterval()).UnixNano())
 
 	var wg sync.WaitGroup
 	for uploaded := int64(1 << 20); uploaded <= total; uploaded += 1 << 20 {
@@ -175,4 +180,73 @@ func singleEntityCounts(entities []tg.MessageEntityClass) (bold, code, blockquot
 		}
 	}
 	return
+}
+
+func TestSingleProgressIntervalAndImmediateFinal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[progress]\nupdate_interval_seconds=15\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Init(t.Context(), path); err != nil {
+		t.Fatal(err)
+	}
+	i18n.Init("en")
+	t.Cleanup(func() { i18n.Init("zh-Hans") })
+	for _, tt := range []struct {
+		name string
+		err  error
+	}{{"completed", nil}, {"failed", errors.New("failed")}, {"cancelled", context.Canceled}} {
+		t.Run(tt.name, func(t *testing.T) {
+			edits := make(chan string, 100)
+			p := &Progress{editor: progressmsg.NewWithSender(t.Context(), 0, func(_ context.Context, r *tg.MessagesEditMessageRequest) error { edits <- r.Message; return nil })}
+			info := progressTestTaskInfo{}
+			take := func() {
+				t.Helper()
+				select {
+				case <-edits:
+				case <-time.After(time.Second):
+					t.Fatal("missing immediate edit")
+				}
+			}
+			p.OnStart(t.Context(), info)
+			take()
+			start := p.lastUpdateAt.Load()
+			for n := int64(1); n <= 100; n++ {
+				p.OnProgress(t.Context(), info, n, 100)
+			}
+			if p.lastUpdateAt.Load() != start || p.downloadedBytes != 100 {
+				t.Fatal("download throttling lost statistics or refreshed early")
+			}
+			select {
+			case <-edits:
+				t.Fatal("early download edit")
+			default:
+			}
+			p.lastUpdateAt.Store(time.Now().Add(-config.ProgressInterval()).UnixNano())
+			p.OnProgress(t.Context(), info, 100, 100)
+			take()
+			p.OnUploadStart(t.Context(), info, 100)
+			take()
+			for n := int64(1); n <= 100; n++ {
+				p.OnUploadProgress(t.Context(), info, n, 100)
+			}
+			if p.uploadedBytes != 100 {
+				t.Fatal("throttling lost uploaded bytes")
+			}
+			select {
+			case <-edits:
+				t.Fatal("early upload edit")
+			default:
+			}
+			p.OnDone(t.Context(), info, tt.err)
+			take()
+			p.OnProgress(t.Context(), info, 101, 101)
+			p.OnUploadStart(t.Context(), info, 100)
+			select {
+			case <-edits:
+				t.Fatal("late callback overwrote final")
+			case <-time.After(10 * time.Millisecond):
+			}
+		})
+	}
 }

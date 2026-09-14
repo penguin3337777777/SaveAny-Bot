@@ -7,11 +7,21 @@ retry = 3      # 下载失败重试次数 / Number of retries on download failur
 threads = 4    # 单个任务下载使用的最大线程数 / Max threads per download task
 stream = false # 使用流式传输模式, 建议仅在硬盘空间十分有限时使用. / Stream mode, recommended only when disk space is very limited.
 
+[progress]
+# 单文件和批量 Telegram 普通进度消息编辑间隔，默认 15 秒，最小 1 秒。
+# Ordinary single/batch Telegram progress edit interval; default 15 seconds, minimum 1.
+update_interval_seconds = 15
+
 [log]
 # 日志级别, 可选: debug, info, warn, error, fatal / Log level, options: debug, info, warn, error, fatal
 level = "debug"
 
 [telegram]
+# 每个 Session、DC 的下载连接池大小，默认 8；1 使用原下载路径，小于 1 按 1 处理。
+# Download pool size per session/DC; default 8, 1 uses the original path, values below 1 become 1.
+# threads 控制单文件并发分片数；本配置控制底层连接数。无需登录用户账号。
+# threads controls concurrent chunks per file; this controls connections. No user login is required.
+download_pool_size = 8
 # Bot Token
 # 更换 Bot Token 后请删除会话数据库文件 (默认路径为 data/session.db )
 # After changing Bot Token, delete the session database file (default path: data/session.db)

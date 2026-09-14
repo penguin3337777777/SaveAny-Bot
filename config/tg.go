@@ -1,6 +1,7 @@
 package config
 
 type telegramConfig struct {
+	DownloadPoolSize  int           `toml:"download_pool_size" mapstructure:"download_pool_size" json:"download_pool_size"`
 	Token             string        `toml:"token" mapstructure:"token"`
 	AppID             int           `toml:"app_id" mapstructure:"app_id" json:"app_id"`
 	AppHash           string        `toml:"app_hash" mapstructure:"app_hash" json:"app_hash"`

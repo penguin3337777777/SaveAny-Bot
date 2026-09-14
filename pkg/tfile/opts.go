@@ -37,3 +37,6 @@ func WithSizeIfZero(size int64) TGFileOption {
 		}
 	}
 }
+
+// WithDC sets the media data center; zero uses the original downloader.
+func WithDC(dc int) TGFileOption { return func(f *tgFile) { f.dc = dc } }

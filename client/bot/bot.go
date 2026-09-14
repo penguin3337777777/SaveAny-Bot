@@ -10,9 +10,11 @@ import (
 	"github.com/celestix/gotgproto/sessionMaker"
 	"github.com/charmbracelet/log"
 	"github.com/gotd/td/tg"
+
 	"github.com/krau/SaveAny-Bot/client/bot/handlers"
 	"github.com/krau/SaveAny-Bot/client/middleware"
 	"github.com/krau/SaveAny-Bot/common/i18n"
+	"github.com/krau/SaveAny-Bot/common/tdler"
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/database"
@@ -93,6 +95,7 @@ func Init(ctx context.Context) <-chan struct{} {
 		}
 		handlers.Register(result.client.Dispatcher)
 		ectx = result.client.CreateContext()
+		tdler.RegisterClient(ectx.Context, ectx.Raw, result.client.Client, middleware.NewDefaultMiddlewares(ctx, 5*time.Minute)...)
 		log.FromContext(ctx).Info("Bot initialization completed.")
 	}
 	return shouldRestart

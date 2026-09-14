@@ -56,6 +56,31 @@ retry = 3
 proxy = "socks5://127.0.0.1:7890"
 ```
 
+### Telegram download pools and progress updates
+
+`telegram.download_pool_size` sets the maximum number of download connections per Telegram session and DC. The default is **8**; **1** selects the original download path. Values below 1 become 1. Pools are created lazily and reused; Bot and Userbot sessions remain separate. Missing DC information, an unregistered session, or pool initialization failure falls back to the original client. Debug logs report `dc`, `threads`, `pool_size`, `pooled`, and a fallback `reason`.
+
+Keep forwarding files to the same Bot. No tdl installation, user account login, or message link is required. `threads` still controls concurrent chunk requests for one file; it is independent of pool size. Streaming also uses the selected DC client but remains sequential.
+
+`progress.update_interval_seconds` controls ordinary Telegram progress edits for single-file and batch Telegram file tasks. The default is **15 seconds**, with a minimum of **1**; values below 1 become 1. A value of 30 further reduces edits. Numeric progress and batch item state changes are coalesced per message. Task start and final completion/failure/cancellation bypass the interval; single-file upload transitions and retries also bypass it. During Telegram FLOOD_WAIT, actual display may be delayed. Editing runs independently of transfer callbacks and retains only the latest pending snapshot, without replaying missed updates. This setting does not throttle file RPCs or internal byte counters.
+
+```toml
+workers = 1
+threads = 4
+stream = false
+
+[telegram]
+token = "YOUR_BOT_TOKEN"
+download_pool_size = 8
+
+[progress]
+update_interval_seconds = 15
+```
+
+Environment overrides: `SAVEANY_TELEGRAM_DOWNLOAD_POOL_SIZE` and `SAVEANY_PROGRESS_UPDATE_INTERVAL_SECONDS`. Old configurations use the defaults. Restart after changing these settings.
+
+For performance validation, keep the same VPS, file, proxy settings, time window, `threads=4`, and `workers=1`. Compare this Bot with pool sizes 1 and 8 over repeated runs, recording download time separately from storage upload time. Compare with tdl pool sizes 1 and 8 as a reference. A configured maximum of 8 does not mean 8 connections are always open: connections are created on demand. Confirm pool selection in logs, and measure throughput; a passing unit test cannot establish a speed improvement. Bot and user sessions may achieve different speeds.
+
 ### Telegram Configuration
 
 - `token`: Your Telegram Bot Token, which can be obtained by creating a Bot through [BotFather](https://t.me/botfather).

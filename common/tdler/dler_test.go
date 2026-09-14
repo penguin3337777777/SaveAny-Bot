@@ -86,7 +86,7 @@ func TestDownloadServerLikeEOF(t *testing.T) {
 				client, int64(tt.size), "test.bin",
 			)
 
-			dl := NewDownloader(file)
+			dl := NewDownloader(t.Context(), file)
 			var got []byte
 			var err error
 			if tt.parallel {
@@ -125,7 +125,7 @@ func TestDownloadPhotoUnknownSize(t *testing.T) {
 		client, 0, "photo.png",
 	)
 
-	dl := NewDownloader(file)
+	dl := NewDownloader(t.Context(), file)
 	buf := make([]byte, len(data))
 	_, err := dl.WithThreads(1).Parallel(context.Background(), &memWriterAt{b: buf})
 	if err != nil {

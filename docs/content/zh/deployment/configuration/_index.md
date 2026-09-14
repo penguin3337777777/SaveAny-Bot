@@ -56,6 +56,31 @@ retry = 3
 proxy = "socks5://127.0.0.1:7890"
 ```
 
+### Telegram 下载连接池与进度刷新
+
+`telegram.download_pool_size` 控制每个 Telegram Session、DC 的最大下载连接数，默认 **8**。设为 **1** 使用原下载路径，小于 1 自动按 1 处理。连接池按需创建并复用，Bot 与 Userbot 的会话互相隔离。缺少 DC、会话未注册或连接池初始化失败时，自动回退到原客户端。Debug 日志会记录 `dc`、`threads`、`pool_size`、`pooled` 和回退 `reason`。
+
+仍然只需向原 Bot 转发文件，无需安装 tdl、登录用户账号或提供消息链接。`threads` 继续控制单文件的并发分片请求数，与连接池大小独立。流式下载也使用选定的 DC 客户端，但仍然顺序传输。
+
+`progress.update_interval_seconds` 控制单文件和批量 Telegram 文件任务的普通进度消息编辑间隔，默认 **15 秒**，最低 **1 秒**，小于 1 自动按 1 处理。可以设为 30 进一步减少编辑。数值进度和批量任务的 item 状态变化按消息合并限频；任务开始、最终完成、失败、取消绕过该间隔，单文件切换上传阶段和上传重试也可立即更新。遇到 Telegram FLOOD_WAIT 时，实际显示仍可能延后。消息编辑独立于传输回调，只保留最新待发送内容，不补发遗漏的旧进度。此配置不限制文件下载 RPC，也不降低内部字节统计频率。
+
+```toml
+workers = 1
+threads = 4
+stream = false
+
+[telegram]
+token = "YOUR_BOT_TOKEN"
+download_pool_size = 8
+
+[progress]
+update_interval_seconds = 15
+```
+
+对应环境变量：`SAVEANY_TELEGRAM_DOWNLOAD_POOL_SIZE`、`SAVEANY_PROGRESS_UPDATE_INTERVAL_SECONDS`。旧配置使用默认值，修改后需重启。
+
+性能验收时固定 VPS、文件、代理设置、时间段、`threads=4` 和 `workers=1`，对同一个 Bot 分别测试 pool=1 和 pool=8，多次记录下载时间并与存储上传时间分开。tdl 的 pool=1、pool=8 可作为参考。最大连接数设为 8 不代表始终打开 8 条连接，连接会按请求需求建立。先通过日志确认选用了 Pool，再测实际吞吐；单元测试通过不能证明提速，Bot 与用户账号的速度也可能不同。
+
 ### Telegram 配置
 
 - `token`: 你的 Telegram Bot Token, 可以通过 [BotFather](https://t.me/botfather) 创建 Bot 并获取 Token.

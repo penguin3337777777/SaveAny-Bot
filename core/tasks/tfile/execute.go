@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/duke-git/lancet/v2/retry"
+
 	"github.com/krau/SaveAny-Bot/common/tdler"
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
 	"github.com/krau/SaveAny-Bot/common/utils/ioutil"
@@ -19,10 +20,11 @@ import (
 	"github.com/krau/SaveAny-Bot/storage"
 )
 
-func (t *Task) Execute(ctx context.Context) error {
+func (t *Task) Execute(ctx context.Context) (resultErr error) {
 	logger := log.FromContext(ctx).WithPrefix(fmt.Sprintf("file[%s]", t.File.Name()))
 	if t.Progress != nil {
 		t.Progress.OnStart(ctx, t)
+		defer func() { t.Progress.OnDone(ctx, t, resultErr) }()
 	}
 	if t.stream {
 		return executeStream(ctx, t)
@@ -40,12 +42,7 @@ func (t *Task) Execute(ctx context.Context) error {
 	}()
 	wrAt := newWriterAt(ctx, localFile, t.Progress, t)
 
-	defer func() {
-		if t.Progress != nil {
-			t.Progress.OnDone(ctx, t, err)
-		}
-	}()
-	_, err = tdler.NewDownloader(t.File).Parallel(ctx, wrAt)
+	_, err = tdler.NewDownloader(ctx, t.File).Parallel(ctx, wrAt)
 	if err != nil {
 		return fmt.Errorf("failed to download file: %w", err)
 	}

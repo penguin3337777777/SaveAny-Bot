@@ -12,6 +12,8 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/duke-git/lancet/v2/retry"
+	"golang.org/x/sync/errgroup"
+
 	"github.com/krau/SaveAny-Bot/common/tdler"
 	"github.com/krau/SaveAny-Bot/common/utils/fsutil"
 	"github.com/krau/SaveAny-Bot/common/utils/ioutil"
@@ -20,7 +22,6 @@ import (
 	"github.com/krau/SaveAny-Bot/pkg/storagetypes"
 	"github.com/krau/SaveAny-Bot/pkg/taskevent"
 	"github.com/krau/SaveAny-Bot/storage"
-	"golang.org/x/sync/errgroup"
 )
 
 type executionGroup struct {
@@ -306,7 +307,7 @@ func (t *Task) downloadElement(ctx context.Context, elem *TaskElement) error {
 			DownloadedBytes: downloaded,
 		})
 	})
-	_, downloadErr := tdler.NewDownloader(elem.File).Parallel(ctx, wrAt)
+	_, downloadErr := tdler.NewDownloader(ctx, elem.File).Parallel(ctx, wrAt)
 	closeErr := localFile.Close()
 	if downloadErr != nil {
 		t.markItemFailed(elem.ID, FailureStageDownload, downloadErr)
@@ -357,7 +358,7 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 		errg.Go(func() error {
 			defer pw.Close()
 			logger.Info("Starting file download in stream mode")
-			_, err := tdler.NewDownloader(elem.File).Stream(uploadCtx, wr)
+			_, err := tdler.NewDownloader(uploadCtx, elem.File).Stream(uploadCtx, wr)
 			if err != nil {
 				logger.Errorf("Failed to download file: %v", err)
 				t.markItemFailed(elem.ID, FailureStageDownload, err)
@@ -403,7 +404,7 @@ func (t *Task) processElement(ctx context.Context, elem TaskElement) error {
 			DownloadedBytes: downloaded,
 		})
 	})
-	_, err = tdler.NewDownloader(elem.File).Parallel(ctx, wrAt)
+	_, err = tdler.NewDownloader(ctx, elem.File).Parallel(ctx, wrAt)
 	if err != nil {
 		t.markItemFailed(elem.ID, FailureStageDownload, err)
 		t.notifyStateChange(ctx)

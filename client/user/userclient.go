@@ -11,10 +11,11 @@ import (
 	"github.com/celestix/gotgproto/dispatcher/handlers/filters"
 	"github.com/celestix/gotgproto/ext"
 	"github.com/celestix/gotgproto/sessionMaker"
-
 	"github.com/charmbracelet/log"
 	"github.com/gotd/td/tg"
+
 	"github.com/krau/SaveAny-Bot/client/middleware"
+	"github.com/krau/SaveAny-Bot/common/tdler"
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
 	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/database"
@@ -95,6 +96,7 @@ func Login(ctx context.Context) (*gotgproto.Client, error) {
 			return nil, r.err
 		}
 		uc = r.client
+		tdler.RegisterClient(uc.CreateContext().Context, uc.API(), uc.Client, middleware.NewDefaultMiddlewares(ctx, 5*time.Minute)...)
 		uc.Dispatcher.AddHandler(handlers.NewMessage(filters.Message.Media, func(ctx *ext.Context, u *ext.Update) error {
 			switch u.UpdateClass.(type) {
 			case *tg.UpdateEditChannelMessage, *tg.UpdateEditMessage, *tg.UpdateDeleteChannelMessages, *tg.UpdateDeleteMessages:

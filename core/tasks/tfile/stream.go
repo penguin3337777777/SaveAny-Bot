@@ -6,8 +6,9 @@ import (
 	"io"
 
 	"github.com/charmbracelet/log"
-	"github.com/krau/SaveAny-Bot/common/tdler"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/krau/SaveAny-Bot/common/tdler"
 )
 
 func executeStream(ctx context.Context, task *Task) error {
@@ -23,20 +24,14 @@ func executeStream(ctx context.Context, task *Task) error {
 	errg.Go(func() error {
 		defer pw.Close()
 		logger.Info("Starting file download in stream mode")
-		_, err := tdler.NewDownloader(task.File).Stream(uploadCtx, wr)
+		_, err := tdler.NewDownloader(uploadCtx, task.File).Stream(uploadCtx, wr)
 		if err != nil {
 			logger.Errorf("Failed to download file: %v", err)
 			pw.CloseWithError(err)
 		}
 		return err
 	})
-	var err error
-	defer func() {
-		if task.Progress != nil {
-			task.Progress.OnDone(ctx, task, err)
-		}
-	}()
-	if err = errg.Wait(); err != nil {
+	if err := errg.Wait(); err != nil {
 		return err
 	}
 	logger.Info("File downloaded successfully in stream mode")
