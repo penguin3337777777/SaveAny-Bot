@@ -1,0 +1,49 @@
+name: Build DC Pool Preview Image
+
+on:
+  push:
+    branches: [codex/telegram-dc-pool]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dc-pool-preview
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      - name: Build Linux amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: saveany-bot:dc-pool
+          build-args: |
+            VERSION=dc-pool-preview
+            GitCommit=${{ github.sha }}
+          cache-from: type=gha,scope=dc-pool-preview
+          cache-to: type=gha,mode=max,scope=dc-pool-preview
+      - name: Package and publish preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          docker save saveany-bot:dc-pool | gzip -1 > saveany-bot-dc-pool-linux-amd64.tar.gz
+          sha256sum saveany-bot-dc-pool-linux-amd64.tar.gz > SHA256SUMS
+          tag="dc-pool-${GITHUB_SHA:0:12}"
+          gh release create "$tag" \
+            saveany-bot-dc-pool-linux-amd64.tar.gz SHA256SUMS \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "DC Pool preview ${GITHUB_SHA:0:12}" \
+            --notes "Linux amd64 Docker image for the DC Pool preview. Download the archive, verify SHA256SUMS, then run: docker load -i saveany-bot-dc-pool-linux-amd64.tar.gz. Image tag: saveany-bot:dc-pool. Built from $GITHUB_SHA."
