@@ -15,9 +15,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/go-build \
-    --mount=type=cache,target=/go/pkg \
+    --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 \
-    go build -trimpath \
+    go build -v -trimpath \
     -tags=no_jsparser,no_minio,sqlite_glebarez,no_bubbletea \
     -ldflags=" \
     -s -w \

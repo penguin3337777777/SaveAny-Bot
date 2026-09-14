@@ -12,9 +12,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/go-build \
-    --mount=type=cache,target=/go/pkg \
+    --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 \
-    go build -trimpath \
+    go build -v -trimpath \
     -ldflags=" \
     -s -w \
     -X 'github.com/krau/SaveAny-Bot/config.Version=${VERSION}' \
