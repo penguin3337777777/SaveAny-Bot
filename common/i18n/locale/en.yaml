@@ -453,4 +453,15 @@ collect:
     Messages scanned: {{.Scanned}}
     Matching videos: {{.Matched}}
     Saved: {{.Saved}} · Existing names skipped: {{.Skipped}} · Failed: {{.Failed}}
-    {{.Error}}
+    {{if .Error}}Latest error: {{.Error}}{{end}}
+  checking: Checking destination
+  downloading: Downloading
+  uploading: Sending to storage endpoint
+  confirming: Waiting for storage completion (including cloud upload)
+  more_active: '{{.Count}} more files active'
+  item: |
+    <blockquote><b>{{.Phase}}</b>
+    <code>{{.Name}}</code>
+    {{.Bar}} {{.Percent}}%
+    {{.Done}} / {{.Total}}
+    Phase average {{.Rate}}/s</blockquote>

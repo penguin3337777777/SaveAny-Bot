@@ -454,4 +454,15 @@ collect:
     已扫描消息：{{.Scanned}}
     匹配视频：{{.Matched}}
     保存成功：{{.Saved}} · 同名跳过：{{.Skipped}} · 失败：{{.Failed}}
-    {{.Error}}
+    {{if .Error}}最近错误：{{.Error}}{{end}}
+  checking: 查重与准备
+  downloading: 下载中
+  uploading: 传至存储接口
+  confirming: 等待存储完成（含网盘上传）
+  more_active: '另有 {{.Count}} 个文件处理中'
+  item: |
+    <blockquote><b>{{.Phase}}</b>
+    <code>{{.Name}}</code>
+    {{.Bar}} {{.Percent}}%
+    {{.Done}} / {{.Total}}
+    阶段均速 {{.Rate}}/s</blockquote>

@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -88,42 +87,23 @@ func handleCollectCmd(ctx *ext.Context, update *ext.Update) error {
 	}
 	taskCtx := tgutil.ExtWithContext(ctx.Context, ctx)
 	editor := progressmsg.New(taskCtx, user.ChatID, config.ProgressInterval())
-	task := &collect.Task{ID: id, Tag: opts.Tag}
+	p := &collectProgress{editor: editor, id: id, messageID: m.ID}
+	task := &collect.Task{ID: id, Tag: opts.Tag, Concurrency: max(1, config.C().Workers)}
 	task.Fetch = collectHistory(uc, opts.Chat)
 	task.Process = func(c context.Context, msg *tg.Message, album []*tg.Message) (bool, error) {
-		return collectFile(c, id, user, uc, stor, dir, msg, album)
+		slots := collectSlots()
+		select {
+		case slots <- struct{}{}:
+		case <-c.Done():
+			return false, c.Err()
+		}
+		defer func() { <-slots }()
+		progress := p.add(strconv.Itoa(msg.ID))
+		defer progress.close()
+		return collectFile(c, id, user, uc, stor, dir, msg, album, progress)
 	}
-	task.Report = func(s collect.Stats, final bool, taskErr error) {
-		state := i18n.T(i18nk.CollectRunning)
-		if final {
-			state = i18n.T(i18nk.CollectCompleted)
-		}
-		if taskErr != nil {
-			state = i18n.T(i18nk.CollectFailed)
-		}
-		if errors.Is(taskErr, context.Canceled) {
-			state = i18n.T(i18nk.CollectCancelled)
-		}
-		detail := s.LastError
-		if taskErr != nil && detail == "" {
-			detail = taskErr.Error()
-		}
-		text, entities, renderErr := tgutil.RenderHTML(i18n.T(i18nk.CollectProgress, tgutil.EscapeHTMLTemplateData(map[string]any{
-			"ID": id, "State": state, "Scanned": s.Scanned, "Matched": s.Matched, "Saved": s.Saved, "Skipped": s.Skipped, "Failed": s.Failed, "Error": detail,
-		})))
-		if renderErr != nil {
-			return
-		}
-		req := &tg.MessagesEditMessageRequest{ID: m.ID}
-		req.SetMessage(text)
-		req.SetEntities(entities)
-		if !final {
-			req.SetReplyMarkup(collectCancelMarkup(id))
-		} else {
-			req.SetReplyMarkup(&tg.ReplyInlineMarkup{})
-		}
-		editor.Submit(req, false, final)
-	}
+	task.Report = p.report
+
 	if err := core.AddTask(taskCtx, task); err != nil {
 		task.Report(collect.Stats{}, true, err)
 	}
@@ -249,7 +229,7 @@ func (s *collectStorage) Save(ctx context.Context, r io.Reader, p string) error 
 	return s.Storage.Save(ctx, r, p)
 }
 
-func collectFile(ctx context.Context, id string, user *database.User, uc *ext.Context, base storage.Storage, dir string, msg *tg.Message, album []*tg.Message) (bool, error) {
+func collectFile(ctx context.Context, id string, user *database.User, uc *ext.Context, base storage.Storage, dir string, msg *tg.Message, album []*tg.Message, trackers ...tftask.ProgressTracker) (bool, error) {
 	file, err := tfile.FromMediaMessage(msg.Media, uc.Raw, msg, mediautil.TfileOptions(ctx, user, msg)...)
 	if err != nil {
 		return false, err
@@ -309,6 +289,11 @@ func collectFile(ctx context.Context, id string, user *database.User, uc *ext.Co
 			}
 		}
 	}
+	if len(trackers) > 0 {
+		if progress, ok := trackers[0].(*collectItemProgress); ok {
+			progress.update(func(s *collectItemState) { s.name = name; s.total = file.Size() })
+		}
+	}
 	p := path.Join(dir, name)
 	unlock, err := collectPaths.Acquire(ctx, stor.Name()+"\x00"+p)
 	if err != nil {
@@ -338,8 +323,12 @@ func collectFile(ctx context.Context, id string, user *database.User, uc *ext.Co
 	if err != nil {
 		return false, fmt.Errorf("refresh file: %w", err)
 	}
+	var tracker tftask.ProgressTracker
+	if len(trackers) > 0 {
+		tracker = trackers[0]
+	}
 	guard := &collectStorage{Storage: stor}
-	task, err := tftask.NewTGFileTask(id+"_"+strconv.Itoa(msg.ID), ctx, file, guard, p, nil)
+	task, err := tftask.NewTGFileTask(id+"_"+strconv.Itoa(msg.ID), ctx, file, guard, p, tracker)
 	if err != nil {
 		return false, err
 	}

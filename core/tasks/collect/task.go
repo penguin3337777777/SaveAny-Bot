@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/gotd/td/tg"
 	"github.com/krau/SaveAny-Bot/pkg/enums/tasktype"
@@ -26,10 +27,11 @@ type Stats struct {
 	LastError                                string
 }
 type Task struct {
-	ID, Tag string
-	Fetch   func(context.Context, int) (Page, error)
-	Process func(context.Context, *tg.Message, []*tg.Message) (bool, error)
-	Report  func(Stats, bool, error)
+	ID, Tag     string
+	Concurrency int
+	Fetch       func(context.Context, int) (Page, error)
+	Process     func(context.Context, *tg.Message, []*tg.Message) (bool, error)
+	Report      func(Stats, bool, error)
 }
 
 func (t *Task) TaskID() string          { return t.ID }
@@ -65,13 +67,23 @@ func IsVideo(m *tg.Message) bool {
 }
 
 func (t *Task) Execute(ctx context.Context) (result error) {
+	ctx, cancel := context.WithCancel(ctx)
+	var pending sync.WaitGroup
+	var mu sync.Mutex
+	limit := make(chan struct{}, max(1, t.Concurrency))
 	var stats Stats
 	report := func(final bool, err error) {
 		if t.Report != nil {
 			t.Report(stats, final, err)
 		}
 	}
-	defer func() { report(true, result) }()
+	defer func() {
+		cancel()
+		pending.Wait()
+		mu.Lock()
+		defer mu.Unlock()
+		report(true, result)
+	}()
 	report(false, nil)
 	// Keep at most one consecutive Telegram album across page boundaries.
 	var album []*tg.Message
@@ -85,7 +97,7 @@ func (t *Task) Execute(ctx context.Context) (result error) {
 		if !matched {
 			return nil
 		}
-		// Stable oldest-first ordering inside a media group.
+		// Submit oldest-first inside a media group; concurrent completion may differ.
 		for i := len(group) - 1; i >= 0; i-- {
 			m := group[i]
 			if !IsVideo(m) {
@@ -94,25 +106,44 @@ func (t *Task) Execute(ctx context.Context) (result error) {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			stats.Matched++
-			report(false, nil)
-			skipped, err := t.Process(ctx, m, group)
-			if ctx.Err() != nil {
+			select {
+			case limit <- struct{}{}:
+			case <-ctx.Done():
 				return ctx.Err()
 			}
-			if err != nil {
-				stats.Failed++
-				detail := []rune(err.Error())
-				if len(detail) > 200 {
-					detail = detail[:200]
+			process := func() {
+				defer func() { <-limit }()
+				mu.Lock()
+				stats.Matched++
+				report(false, nil)
+				mu.Unlock()
+				skipped, err := t.Process(ctx, m, group)
+				mu.Lock()
+				defer mu.Unlock()
+				if ctx.Err() != nil {
+					return
 				}
-				stats.LastError = string(detail)
-			} else if skipped {
-				stats.Skipped++
-			} else {
-				stats.Saved++
+				if err != nil {
+					stats.Failed++
+					detail := []rune(err.Error())
+					if len(detail) > 200 {
+						detail = detail[:200]
+					}
+					stats.LastError = string(detail)
+				} else if skipped {
+					stats.Skipped++
+				} else {
+					stats.Saved++
+				}
+				report(false, nil)
 			}
-			report(false, nil)
+			if t.Concurrency <= 1 {
+				process()
+			} else {
+				pending.Add(1)
+				go func() { defer pending.Done(); process() }()
+			}
+
 		}
 		return nil
 	}
@@ -134,7 +165,9 @@ func (t *Task) Execute(ctx context.Context) (result error) {
 				continue
 			}
 			lastID = m.ID
+			mu.Lock()
 			stats.Scanned++
+			mu.Unlock()
 			if len(album) > 0 && (m.GroupedID == 0 || m.GroupedID != album[0].GroupedID) {
 				if err := flush(); err != nil {
 					return err
@@ -150,7 +183,9 @@ func (t *Task) Execute(ctx context.Context) (result error) {
 				}
 			}
 		}
+		mu.Lock()
 		report(false, nil)
+		mu.Unlock()
 		if page.Done {
 			break
 		}
@@ -160,6 +195,10 @@ func (t *Task) Execute(ctx context.Context) (result error) {
 		offset = page.Next
 	}
 	if err := flush(); err != nil {
+		return err
+	}
+	pending.Wait()
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if stats.Failed > 0 {

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/tg"
 )
@@ -170,5 +172,108 @@ func TestLargeScanRetainsOnlyOnePage(t *testing.T) {
 	}
 	if processed != count {
 		t.Fatal(processed)
+	}
+}
+
+func TestCollectConcurrencyBoundAndCancelWaitsForCleanup(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	started := make(chan struct{}, 10)
+	release := make(chan struct{})
+	finished := make(chan error, 1)
+	var active, peak, cleaned atomic.Int32
+	task := &Task{Tag: "#x", Concurrency: 2}
+	task.Fetch = func(context.Context, int) (Page, error) {
+		return Page{Messages: []*tg.Message{video(4, 0, "#x"), video(3, 0, "#x"), video(2, 0, "#x"), video(1, 0, "#x")}, Done: true}, nil
+	}
+	task.Process = func(ctx context.Context, _ *tg.Message, _ []*tg.Message) (bool, error) {
+		n := active.Add(1)
+		for old := peak.Load(); n > old; old = peak.Load() {
+			if peak.CompareAndSwap(old, n) {
+				break
+			}
+		}
+		defer active.Add(-1)
+		started <- struct{}{}
+		<-ctx.Done()
+		<-release
+		cleaned.Add(1)
+		return false, ctx.Err()
+	}
+	go func() { finished <- task.Execute(ctx) }()
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(3 * time.Second):
+			t.Fatal("two files did not start concurrently")
+		}
+	}
+	cancel()
+	select {
+	case <-finished:
+		t.Fatal("returned before file cleanup")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-finished:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancel deadlock")
+	}
+	if peak.Load() != 2 || active.Load() != 0 || cleaned.Load() < 2 {
+		t.Fatalf("peak=%d active=%d cleaned=%d", peak.Load(), active.Load(), cleaned.Load())
+	}
+}
+
+func TestCollectConcurrentCompletionCountsEveryOutcome(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var final Stats
+	task := &Task{Tag: "#x", Concurrency: 2}
+	task.Fetch = func(context.Context, int) (Page, error) {
+		return Page{Messages: []*tg.Message{video(3, 0, "#x"), video(2, 0, "#x"), video(1, 0, "#x")}, Done: true}, nil
+	}
+	task.Process = func(ctx context.Context, m *tg.Message, _ []*tg.Message) (bool, error) {
+		if m.ID > 1 {
+			started <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return false, ctx.Err()
+			}
+		}
+		if m.ID == 1 {
+			return false, errors.New("sample failure")
+		}
+		return m.ID == 2, nil
+	}
+	task.Report = func(s Stats, last bool, _ error) {
+		if last {
+			final = s
+		}
+	}
+	done := make(chan error, 1)
+	go func() { done <- task.Execute(t.Context()) }()
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(3 * time.Second):
+			t.Fatal("not concurrent")
+		}
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("failure missing")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("not completed")
+	}
+	if final.Scanned != 3 || final.Matched != 3 || final.Saved != 1 || final.Skipped != 1 || final.Failed != 1 {
+		t.Fatal(final)
 	}
 }
