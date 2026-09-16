@@ -435,3 +435,22 @@ bot:
       error_adding_aria2_download: "Failed to add Aria2 download task: {{.Error}}"
       info_aria2_download_added: "Aria2 download task added, GID: {{.GID}}"
       info_select_storage: "Please select storage, the task will be added to Aria2 download queue after selection"
+
+collect:
+  command: Collect historical group videos by hashtag
+  usage: 'Usage: /collect @chat --tag "#tag" [--type video] [--storage name]. Defaults to videos and your existing default storage/directory. Runs immediately and skips existing names.'
+  need_userbot: 'Historical collection requires a logged-in UserBot. Enable the existing Telegram user integration first; a bot token cannot search group history.'
+  unsupported_storage: 'Storage {{.Storage}} cannot check existence reliably. /collect currently supports AList/OpenList and local storage.'
+  error: 'Cannot start collection: {{.Error}}'
+  queued: 'Collection queued: {{.ID}}. Runs with existing defaults; duplicate names are skipped.'
+  running: Scanning and saving
+  completed: Completed
+  failed: Finished with errors
+  cancelled: Cancelled
+  progress: |
+    <b>Collection: {{.State}}</b>
+    <code>{{.ID}}</code>
+    Messages scanned: {{.Scanned}}
+    Matching videos: {{.Matched}}
+    Saved: {{.Saved}} · Existing names skipped: {{.Skipped}} · Failed: {{.Failed}}
+    {{.Error}}

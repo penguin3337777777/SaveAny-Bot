@@ -22,6 +22,7 @@ type DescCommandHandler struct {
 }
 
 var CommandHandlers = []DescCommandHandler{
+	{"collect", i18nk.CollectCommand, handleCollectCmd},
 	{"start", i18nk.BotMsgCmdStart, handleHelpCmd},
 	{"silent", i18nk.BotMsgCmdSilent, handleSilentCmd},
 	{"storage", i18nk.BotMsgCmdStorage, handleStorageCmd},

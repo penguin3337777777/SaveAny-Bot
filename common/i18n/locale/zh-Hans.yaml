@@ -436,3 +436,22 @@ bot:
       error_adding_aria2_download: "添加 Aria2 下载任务失败: {{.Error}}"
       info_aria2_download_added: "Aria2 下载任务已添加, GID: {{.GID}}"
       info_select_storage: "请选择存储位置, 选择后将添加到 Aria2 下载队列"
+
+collect:
+  command: 按标签收集群组历史视频
+  usage: '用法：/collect @群组 --tag "#标签" [--type video] [--storage 存储名]。默认只保存视频，使用现有默认存储和目录；同名跳过，直接执行。'
+  need_userbot: '收集历史消息需要已登录的 UserBot。请先启用现有的 Telegram 用户账号集成；Bot Token 无法搜索群组历史。'
+  unsupported_storage: '存储 {{.Storage}} 尚不支持可靠查重；/collect 目前支持 AList/OpenList 和本地存储。'
+  error: '无法开始收集：{{.Error}}'
+  queued: '收集任务已排队：{{.ID}}。将按默认设置直接执行，同名文件跳过。'
+  running: 检索与保存中
+  completed: 已完成
+  failed: 结束（存在失败）
+  cancelled: 已取消
+  progress: |
+    <b>标签收集：{{.State}}</b>
+    <code>{{.ID}}</code>
+    已扫描消息：{{.Scanned}}
+    匹配视频：{{.Matched}}
+    保存成功：{{.Saved}} · 同名跳过：{{.Skipped}} · 失败：{{.Failed}}
+    {{.Error}}

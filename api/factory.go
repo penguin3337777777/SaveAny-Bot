@@ -48,6 +48,8 @@ func (f *TaskFactory) CreateTask(req *CreateTaskRequest) (*CreateTaskResponse, e
 	createdAt := time.Now()
 
 	switch req.Type {
+	case tasktype.TaskTypeCollect:
+		return nil, fmt.Errorf("collect requires Telegram user context; use the /collect bot command")
 	case tasktype.TaskTypeDirectlinks:
 		return f.createDirectLinksTask(taskID, createdAt, req, stor)
 	case tasktype.TaskTypeYtdlp:
