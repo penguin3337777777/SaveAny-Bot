@@ -14,6 +14,7 @@ import (
 
 	"github.com/celestix/gotgproto/dispatcher"
 	"github.com/celestix/gotgproto/ext"
+	"github.com/celestix/gotgproto/functions"
 	"github.com/gotd/td/tg"
 	"github.com/rs/xid"
 
@@ -322,7 +323,7 @@ func collectFile(ctx context.Context, id string, user *database.User, uc *ext.Co
 	// need downloading; a page can take hours to process on a small VPS.
 	freshCtx := *uc
 	freshCtx.Context = ctx
-	messages, err := freshCtx.GetMessages(tgutil.ChatIdFromPeer(msg.PeerID), []tg.InputMessageClass{&tg.InputMessageID{ID: msg.ID}})
+	messages, err := freshCtx.GetMessages(functions.GetChatIdFromPeer(msg.PeerID), []tg.InputMessageClass{&tg.InputMessageID{ID: msg.ID}})
 	if err != nil {
 		return false, fmt.Errorf("refresh message: %w", err)
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"github.com/celestix/gotgproto/ext"
+	peerstorage "github.com/celestix/gotgproto/storage"
+	"github.com/gotd/td/bin"
 	"github.com/gotd/td/tg"
 	"github.com/krau/SaveAny-Bot/database"
 	"io"
@@ -60,5 +62,42 @@ func TestCollectExistingFileSkipsBeforeTelegramDownload(t *testing.T) {
 	skipped, err := collectFile(t.Context(), "test", &database.User{}, &ext.Context{}, base, "videos", msg, []*tg.Message{msg})
 	if err != nil || !skipped || base.saves != 0 {
 		t.Fatalf("skipped=%v saves=%d err=%v", skipped, base.saves, err)
+	}
+}
+
+// Stop at the refresh RPC: no Telegram network or download is involved.
+type collectRefreshInvoker struct {
+	t      *testing.T
+	called bool
+	stop   error
+}
+
+func (i *collectRefreshInvoker) Invoke(ctx context.Context, input bin.Encoder, output bin.Decoder) error {
+	i.called = true
+	req, ok := input.(*tg.ChannelsGetMessagesRequest)
+	if !ok {
+		i.t.Fatalf("unexpected request %T", input)
+	}
+	ch, ok := req.Channel.(*tg.InputChannel)
+	if !ok || ch.ChannelID != 3188728031 || ch.AccessHash != 12345 {
+		i.t.Fatalf("incorrect refresh channel: %#v", req.Channel)
+	}
+	if len(req.ID) != 1 || req.ID[0].(*tg.InputMessageID).ID != 21632 {
+		i.t.Fatalf("incorrect message IDs: %#v", req.ID)
+	}
+	return i.stop
+}
+
+func TestCollectPrivateChannelRefreshUsesStoredPeerID(t *testing.T) {
+	peers := peerstorage.NewPeerStorage(nil, true)
+	peers.AddPeer(3188728031, 12345, peerstorage.TypeChannel, "")
+	stop := errors.New("stop after validated refresh")
+	invoker := &collectRefreshInvoker{t: t, stop: stop}
+	uc := &ext.Context{Raw: tg.NewClient(invoker), PeerStorage: peers}
+	msg := &tg.Message{ID: 21632, PeerID: &tg.PeerChannel{ChannelID: 3188728031}, Media: &tg.MessageMediaDocument{Document: &tg.Document{ID: 42, MimeType: "video/mp4", Attributes: []tg.DocumentAttributeClass{&tg.DocumentAttributeFilename{FileName: "video.mp4"}}}}}
+	base := &collectProbeStorage{}
+	_, err := collectFile(t.Context(), "test", &database.User{}, uc, base, "videos", msg, []*tg.Message{msg})
+	if !invoker.called || !errors.Is(err, stop) || base.saves != 0 {
+		t.Fatalf("called=%v err=%v saves=%d", invoker.called, err, base.saves)
 	}
 }
