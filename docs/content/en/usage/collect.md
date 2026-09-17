@@ -28,10 +28,10 @@ Each task uses one existing queue worker as coordinator and bounded concurrent f
 
 Progress respects the existing update interval. Cancel using the button or `/cancel taskID`. Restarting the bot does not resume a collection: resend the command to scan again and skip names currently present remotely. Changing filename settings, rules or paths changes duplicate detection. No HTTP API creation is supported, since collection requires Telegram user permissions and defaults.
 
-## Concurrent file progress
+## Download/upload pipeline
 
-The existing `workers` setting also limits concurrent files within a collection. With `workers=2`, one collection can process two videos concurrently; all collections share two file slots. Ordinary save tasks retain their existing queue and do not share this collection-specific file limit. Scanning applies backpressure instead of accumulating unbounded jobs. Only a page, an album, bounded active items and their albums, counters and the latest error are held in memory. No new configuration or persistent state is introduced.
+A collection occupies one existing queue worker and uses one download lane and one upload lane internally. This works with `workers=1`: while A uploads, B downloads; if B finishes first, it waits for A instead of downloading C. All collections share this pipeline, retaining at most two temporary files. The upload lane remains occupied through storage confirmation (including OpenList-to-115 transfer), retries and temporary-file cleanup. Cancellation waits for cleanup before final reporting. No new configuration or persistent job state is introduced.
 
-The same throttled status message shows individual filenames, phases, progress bars, byte counts and phase-average speeds (up to four visible rows, with a count for additional active items). Upload speed measures Bot-to-storage-endpoint transfer, not OpenList-to-115 network throughput. After transfer reaches 100%, the item waits for storage completion, which may include the cloud upload. It counts as saved only when storage returns success. Retries reset upload progress; finished rows are removed. Cancellation waits for active file cleanup before final reporting.
+The same throttled message shows up to two active filenames, phase-specific bars, byte counts and average speeds. Phases distinguish downloading, downloaded/waiting for upload, sending to the storage endpoint, and waiting for storage completion. Bot-to-OpenList speed is not OpenList-to-115 throughput. Files count as saved only after storage success; retries reset upload progress and completed rows are removed.
 
-Concurrent same-name candidates are serialized by destination path; the first lock holder wins, so scan order does not guarantee which same-name source is kept.
+Same-name candidates are serialized by destination path; the first lock holder wins. Scanning keeps only a page, one album and bounded active items rather than accumulating a download backlog.

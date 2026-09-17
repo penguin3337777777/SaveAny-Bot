@@ -88,17 +88,16 @@ func handleCollectCmd(ctx *ext.Context, update *ext.Update) error {
 	taskCtx := tgutil.ExtWithContext(ctx.Context, ctx)
 	editor := progressmsg.New(taskCtx, user.ChatID, config.ProgressInterval())
 	p := &collectProgress{editor: editor, id: id, messageID: m.ID}
-	task := &collect.Task{ID: id, Tag: opts.Tag, Concurrency: max(1, config.C().Workers)}
+	task := &collect.Task{ID: id, Tag: opts.Tag, Concurrency: 2}
 	task.Fetch = collectHistory(uc, opts.Chat)
 	task.Process = func(c context.Context, msg *tg.Message, album []*tg.Message) (bool, error) {
-		slots := collectSlots()
-		select {
-		case slots <- struct{}{}:
-		case <-c.Done():
-			return false, c.Err()
+		lease, err := collectPipeline.Acquire(c)
+		if err != nil {
+			return false, err
 		}
-		defer func() { <-slots }()
+		defer lease.Release()
 		progress := p.add(strconv.Itoa(msg.ID))
+		progress.lease = lease
 		defer progress.close()
 		return collectFile(c, id, user, uc, stor, dir, msg, album, progress)
 	}
@@ -331,6 +330,9 @@ func collectFile(ctx context.Context, id string, user *database.User, uc *ext.Co
 	task, err := tftask.NewTGFileTask(id+"_"+strconv.Itoa(msg.ID), ctx, file, guard, p, tracker)
 	if err != nil {
 		return false, err
+	}
+	if progress, ok := tracker.(*collectItemProgress); ok && progress.lease != nil {
+		task.AwaitUpload = progress.awaitUpload
 	}
 	if err = task.Execute(ctx); err != nil {
 		return false, err

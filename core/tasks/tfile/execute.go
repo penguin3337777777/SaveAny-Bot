@@ -47,6 +47,14 @@ func (t *Task) Execute(ctx context.Context) (resultErr error) {
 		return fmt.Errorf("failed to download file: %w", err)
 	}
 	logger.Infof("File downloaded successfully")
+	if t.AwaitUpload != nil {
+		if err := t.AwaitUpload(ctx); err != nil {
+			return fmt.Errorf("wait for upload stage: %w", err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if path.Ext(t.File.Name()) == "" {
 		ext := fsutil.DetectFileExt(t.localPath)
 		if ext != "" {

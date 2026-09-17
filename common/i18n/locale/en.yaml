@@ -465,3 +465,4 @@ collect:
     {{.Bar}} {{.Percent}}%
     {{.Done}} / {{.Total}}
     Phase average {{.Rate}}/s</blockquote>
+  waiting_upload: Downloaded, waiting for upload
