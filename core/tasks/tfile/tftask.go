@@ -15,17 +15,14 @@ import (
 var _ core.Executable = (*Task)(nil)
 
 type Task struct {
-	ID       string
-	Ctx      context.Context
-	File     tfile.TGFile
-	Storage  storage.Storage
-	Path     string
-	Progress ProgressTracker
-	// AwaitUpload optionally waits for an upload stage after download.
-	// Execute retains ownership of temporary-file cleanup while waiting.
-	AwaitUpload func(context.Context) error
-	stream      bool // true if the file should be downloaded in stream mode
-	localPath   string
+	ID        string
+	Ctx       context.Context
+	File      tfile.TGFile
+	Storage   storage.Storage
+	Path      string
+	Progress  ProgressTracker
+	stream    bool // true if the file should be downloaded in stream mode
+	localPath string
 }
 
 // Title implements core.Exectable.

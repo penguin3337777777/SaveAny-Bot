@@ -335,7 +335,6 @@ const (
 	CollectUnsupportedStorage                             Key = "collect.unsupported_storage"
 	CollectUploading                                      Key = "collect.uploading"
 	CollectUsage                                          Key = "collect.usage"
-	CollectWaitingUpload                                  Key = "collect.waiting_upload"
 	ConfigErrDuplicateStorageName                         Key = "config.err.duplicate_storage_name"
 	ConfigErrInvalidCacheDir                              Key = "config.err.invalid_cache_dir"
 	ErrCleanCacheFailed                                   Key = "err.clean_cache_failed"

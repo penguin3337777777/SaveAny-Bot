@@ -14,12 +14,13 @@ import (
 	"github.com/krau/SaveAny-Bot/common/i18n/i18nk"
 	"github.com/krau/SaveAny-Bot/common/progressmsg"
 	"github.com/krau/SaveAny-Bot/common/utils/tgutil"
+	"github.com/krau/SaveAny-Bot/config"
 	"github.com/krau/SaveAny-Bot/core/tasks/collect"
 	tftask "github.com/krau/SaveAny-Bot/core/tasks/tfile"
 )
 
-// All collection commands share one download lane and one upload lane.
-var collectPipeline = collect.NewPipeline()
+// Shared across collectors: adding commands never multiplies download slots.
+var collectSlots = sync.OnceValue(func() chan struct{} { return make(chan struct{}, max(1, config.C().Workers)) })
 
 type collectItemState struct {
 	name         string
@@ -154,7 +155,6 @@ func collectSize(n float64) string {
 }
 
 type collectItemProgress struct {
-	lease  *collect.Lease
 	parent *collectProgress
 	id     string
 }
@@ -167,7 +167,7 @@ func (p *collectProgress) add(id string) *collectItemProgress {
 	}
 	p.items[id] = &collectItemState{name: id, phase: i18nk.CollectChecking}
 	p.emit(false, nil)
-	return &collectItemProgress{parent: p, id: id}
+	return &collectItemProgress{p, id}
 }
 func (i *collectItemProgress) update(fn func(*collectItemState)) {
 	p := i.parent
@@ -229,13 +229,4 @@ func (i *collectItemProgress) OnUploadProgress(_ context.Context, _ tftask.TaskI
 			s.phase = i18nk.CollectConfirming
 		}
 	})
-}
-
-func (i *collectItemProgress) awaitUpload(ctx context.Context) error {
-	i.update(func(s *collectItemState) {
-		s.phase = i18nk.CollectWaitingUpload
-		s.bytes = s.total
-		s.started = time.Time{}
-	})
-	return i.lease.BeginUpload(ctx)
 }

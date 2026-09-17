@@ -466,4 +466,3 @@ collect:
     {{.Bar}} {{.Percent}}%
     {{.Done}} / {{.Total}}
     阶段均速 {{.Rate}}/s</blockquote>
-  waiting_upload: 下载完成，等待上传
