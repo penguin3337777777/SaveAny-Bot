@@ -89,7 +89,7 @@ func handleCollectCmd(ctx *ext.Context, update *ext.Update) error {
 	editor := progressmsg.New(taskCtx, user.ChatID, config.ProgressInterval())
 	p := &collectProgress{editor: editor, id: id, messageID: m.ID}
 	task := &collect.Task{ID: id, Tag: opts.Tag, Concurrency: max(1, config.C().Workers)}
-	task.Fetch = collectHistory(uc, opts.Chat)
+	task.Fetch, task.Load = collectHistory(uc, opts.Chat)
 	task.Process = func(c context.Context, msg *tg.Message, album []*tg.Message) (bool, error) {
 		slots := collectSlots()
 		select {
@@ -113,9 +113,9 @@ func handleCollectCmd(ctx *ext.Context, update *ext.Update) error {
 // The descending history cursor fixes the upper bound at the first page and
 // excludes newly arriving messages. Full history scanning avoids search-index
 // omissions and retains captions on photo members of mixed video albums.
-func collectHistory(uc *ext.Context, chat string) func(context.Context, int) (collect.Page, error) {
+func collectHistory(uc *ext.Context, chat string) (func(context.Context, int) (collect.Page, error), func(context.Context, []int) ([]*tg.Message, error)) {
 	var peer tg.InputPeerClass
-	return func(ctx context.Context, offset int) (collect.Page, error) {
+	fetch := func(ctx context.Context, offset int) (collect.Page, error) {
 		var page collect.Page
 		c := *uc
 		c.Context = ctx
@@ -176,6 +176,38 @@ func collectHistory(uc *ext.Context, chat string) func(context.Context, int) (co
 		}
 		return page, nil
 	}
+	load := func(ctx context.Context, ids []int) ([]*tg.Message, error) {
+		inputs := make([]tg.InputMessageClass, len(ids))
+		for i, id := range ids {
+			inputs[i] = &tg.InputMessageID{ID: id}
+		}
+		var result tg.MessagesMessagesClass
+		var err error
+		switch p := peer.(type) {
+		case *tg.InputPeerChannel:
+			result, err = uc.Raw.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{Channel: &tg.InputChannel{ChannelID: p.ChannelID, AccessHash: p.AccessHash}, ID: inputs})
+		case *tg.InputPeerChat:
+			result, err = uc.Raw.MessagesGetMessages(ctx, inputs)
+		default:
+			return nil, fmt.Errorf("collection peer not initialized")
+		}
+		if err != nil {
+			return nil, err
+		}
+		messages, ok := result.(interface{ GetMessages() []tg.MessageClass })
+		if !ok {
+			return nil, fmt.Errorf("unexpected message result %T", result)
+		}
+		out := make([]*tg.Message, 0, len(ids))
+		for _, item := range messages.GetMessages() {
+			if m, ok := item.(*tg.Message); ok {
+				out = append(out, m)
+			}
+		}
+		return out, nil
+	}
+	return fetch, load
+
 }
 
 func collectWait(ctx context.Context, d time.Duration) error {

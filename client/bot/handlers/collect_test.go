@@ -101,3 +101,34 @@ func TestCollectPrivateChannelRefreshUsesStoredPeerID(t *testing.T) {
 		t.Fatalf("called=%v err=%v saves=%d", invoker.called, err, base.saves)
 	}
 }
+
+type collectHistoryReloadInvoker struct{ refresh *collectRefreshInvoker }
+
+func (i collectHistoryReloadInvoker) Invoke(ctx context.Context, input bin.Encoder, output bin.Decoder) error {
+	if req, ok := input.(*tg.MessagesGetHistoryRequest); ok {
+		peer, ok := req.Peer.(*tg.InputPeerChannel)
+		if !ok || peer.ChannelID != 3188728031 || peer.AccessHash != 12345 {
+			i.refresh.t.Fatalf("incorrect scan peer: %#v", req.Peer)
+		}
+		var b bin.Buffer
+		if err := (&tg.MessagesMessages{}).Encode(&b); err != nil {
+			return err
+		}
+		return output.Decode(&b)
+	}
+	return i.refresh.Invoke(ctx, input, output)
+}
+func TestCollectPlanReloadUsesResolvedPrivateChannel(t *testing.T) {
+	peers := peerstorage.NewPeerStorage(nil, true)
+	peers.AddPeer(3188728031, 12345, peerstorage.TypeChannel, "")
+	stop := errors.New("validated planned reload")
+	refresh := &collectRefreshInvoker{t: t, stop: stop}
+	uc := &ext.Context{Raw: tg.NewClient(collectHistoryReloadInvoker{refresh: refresh}), PeerStorage: peers}
+	fetch, load := collectHistory(uc, "https://t.me/c/3188728031")
+	if _, err := fetch(t.Context(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := load(t.Context(), []int{21632}); !errors.Is(err, stop) || !refresh.called {
+		t.Fatalf("reload called=%v err=%v", refresh.called, err)
+	}
+}

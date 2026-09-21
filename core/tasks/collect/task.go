@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -25,11 +26,13 @@ type Page struct {
 type Stats struct {
 	Scanned, Matched, Saved, Skipped, Failed int
 	LastError                                string
+	ScanComplete                             bool
 }
 type Task struct {
 	ID, Tag     string
 	Concurrency int
 	Fetch       func(context.Context, int) (Page, error)
+	Load        func(context.Context, []int) ([]*tg.Message, error)
 	Process     func(context.Context, *tg.Message, []*tg.Message) (bool, error)
 	Report      func(Stats, bool, error)
 }
@@ -66,26 +69,36 @@ func IsVideo(m *tg.Message) bool {
 	return false
 }
 
+// The plan contains identifiers only, never file data, captions or documents.
+// This fixed limit keeps the in-memory plan small on a 1 GiB server.
+const MaxPlannedMessages = 100000
+
+var ErrPlanTooLarge = errors.New("collection plan exceeds memory limit")
+
+type plannedGroup struct {
+	IDs     [MaxAlbum]int32
+	GroupID int64
+	Count   uint8
+	Videos  uint16
+}
+
 func (t *Task) Execute(ctx context.Context) (result error) {
 	ctx, cancel := context.WithCancel(ctx)
 	var pending sync.WaitGroup
 	var mu sync.Mutex
-	limit := make(chan struct{}, max(1, t.Concurrency))
 	var stats Stats
 	report := func(final bool, err error) {
 		if t.Report != nil {
 			t.Report(stats, final, err)
 		}
 	}
-	defer func() {
-		cancel()
-		pending.Wait()
-		mu.Lock()
-		defer mu.Unlock()
-		report(true, result)
-	}()
+	defer func() { cancel(); pending.Wait(); mu.Lock(); defer mu.Unlock(); report(true, result) }()
 	report(false, nil)
-	// Keep at most one consecutive Telegram album across page boundaries.
+	if t.Load == nil {
+		return errors.New("collection message loader unavailable")
+	}
+	var plan []plannedGroup
+	plannedMessages := 0
 	var album []*tg.Message
 	flush := func() error {
 		group := album
@@ -97,53 +110,30 @@ func (t *Task) Execute(ctx context.Context) (result error) {
 		if !matched {
 			return nil
 		}
-		// Submit oldest-first inside a media group; concurrent completion may differ.
-		for i := len(group) - 1; i >= 0; i-- {
-			m := group[i]
-			if !IsVideo(m) {
-				continue
+		var entry plannedGroup
+		for i, m := range group {
+			if m.ID <= 0 || int64(m.ID) > math.MaxInt32 {
+				return errors.New("invalid source message ID")
 			}
-			if err := ctx.Err(); err != nil {
-				return err
+			entry.IDs[i] = int32(m.ID)
+			if IsVideo(m) {
+				entry.Videos |= 1 << i
 			}
-			select {
-			case limit <- struct{}{}:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-			process := func() {
-				defer func() { <-limit }()
-				mu.Lock()
+		}
+		if entry.Videos == 0 {
+			return nil
+		}
+		if plannedMessages+len(group) > MaxPlannedMessages {
+			return fmt.Errorf("%w: %d source messages", ErrPlanTooLarge, MaxPlannedMessages)
+		}
+		entry.Count = uint8(len(group))
+		entry.GroupID = group[0].GroupedID
+		plan = append(plan, entry)
+		plannedMessages += len(group)
+		for i := range group {
+			if entry.Videos&(1<<i) != 0 {
 				stats.Matched++
-				report(false, nil)
-				mu.Unlock()
-				skipped, err := t.Process(ctx, m, group)
-				mu.Lock()
-				defer mu.Unlock()
-				if ctx.Err() != nil {
-					return
-				}
-				if err != nil {
-					stats.Failed++
-					detail := []rune(err.Error())
-					if len(detail) > 200 {
-						detail = detail[:200]
-					}
-					stats.LastError = string(detail)
-				} else if skipped {
-					stats.Skipped++
-				} else {
-					stats.Saved++
-				}
-				report(false, nil)
 			}
-			if t.Concurrency <= 1 {
-				process()
-			} else {
-				pending.Add(1)
-				go func() { defer pending.Done(); process() }()
-			}
-
 		}
 		return nil
 	}
@@ -165,9 +155,7 @@ func (t *Task) Execute(ctx context.Context) (result error) {
 				continue
 			}
 			lastID = m.ID
-			mu.Lock()
 			stats.Scanned++
-			mu.Unlock()
 			if len(album) > 0 && (m.GroupedID == 0 || m.GroupedID != album[0].GroupedID) {
 				if err := flush(); err != nil {
 					return err
@@ -183,9 +171,7 @@ func (t *Task) Execute(ctx context.Context) (result error) {
 				}
 			}
 		}
-		mu.Lock()
 		report(false, nil)
-		mu.Unlock()
 		if page.Done {
 			break
 		}
@@ -196,6 +182,99 @@ func (t *Task) Execute(ctx context.Context) (result error) {
 	}
 	if err := flush(); err != nil {
 		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	stats.ScanComplete = true
+	report(false, nil)
+
+	// Only after the scan succeeds do we reload each planned group and save it.
+	limit := make(chan struct{}, max(1, t.Concurrency))
+	fail := func(err error) {
+		stats.Failed++
+		detail := []rune(err.Error())
+		if len(detail) > 200 {
+			detail = detail[:200]
+		}
+		stats.LastError = string(detail)
+	}
+	for _, entry := range plan {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		ids := make([]int, entry.Count)
+		for i := range ids {
+			ids[i] = int(entry.IDs[i])
+		}
+		loaded, loadErr := t.Load(ctx, ids)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		group := make([]*tg.Message, entry.Count)
+		byID := make(map[int]*tg.Message, len(loaded))
+		for _, m := range loaded {
+			if m != nil {
+				byID[m.ID] = m
+			}
+		}
+		for i, id := range ids {
+			group[i] = byID[id]
+			if loadErr == nil && (group[i] == nil || group[i].GroupedID != entry.GroupID) {
+				loadErr = fmt.Errorf("planned source message %d unavailable or album changed", id)
+			}
+		}
+		if loadErr != nil {
+			mu.Lock()
+			for i := range ids {
+				if entry.Videos&(1<<i) != 0 {
+					fail(fmt.Errorf("reload source: %w", loadErr))
+				}
+			}
+			report(false, nil)
+			mu.Unlock()
+			continue
+		}
+		for i := len(group) - 1; i >= 0; i-- {
+			if entry.Videos&(1<<i) == 0 {
+				continue
+			}
+			m := group[i]
+			select {
+			case limit <- struct{}{}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			process := func() {
+				defer func() { <-limit }()
+				var skipped bool
+				var err error
+				if !IsVideo(m) {
+					err = fmt.Errorf("planned video %d is no longer available", m.ID)
+				} else {
+					skipped, err = t.Process(ctx, m, group)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if ctx.Err() != nil {
+					return
+				}
+				if err != nil {
+					fail(err)
+				} else if skipped {
+					stats.Skipped++
+				} else {
+					stats.Saved++
+				}
+				report(false, nil)
+			}
+			if t.Concurrency <= 1 {
+				process()
+			} else {
+				pending.Add(1)
+				go func() { defer pending.Done(); process() }()
+			}
+		}
 	}
 	pending.Wait()
 	if err := ctx.Err(); err != nil {

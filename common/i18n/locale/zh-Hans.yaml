@@ -445,7 +445,7 @@ collect:
   error: '无法开始收集：{{.Error}}'
   queued: '收集任务已排队：{{.ID}}。将按默认设置直接执行，同名文件跳过。'
   running: 检索与保存中
-  completed: 已完成
+  completed: 保存完成，全部成功
   failed: 结束（存在失败）
   cancelled: 已取消
   progress: |
@@ -466,3 +466,8 @@ collect:
     {{.Bar}} {{.Percent}}%
     {{.Done}} / {{.Total}}
     阶段均速 {{.Rate}}/s</blockquote>
+  scanning: 正在扫描
+  saving: 扫描完成，正在保存
+  no_matches: 扫描完成，没有匹配的视频
+  completed_skipped: 保存完成（同名文件已跳过）
+  plan_too_large: '匹配清单超过 {{.Limit}} 条关联消息的内存上限，本次未开始下载。'

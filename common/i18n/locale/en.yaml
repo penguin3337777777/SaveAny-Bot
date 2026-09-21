@@ -444,7 +444,7 @@ collect:
   error: 'Cannot start collection: {{.Error}}'
   queued: 'Collection queued: {{.ID}}. Runs with existing defaults; duplicate names are skipped.'
   running: Scanning and saving
-  completed: Completed
+  completed: Saving completed successfully
   failed: Finished with errors
   cancelled: Cancelled
   progress: |
@@ -465,3 +465,8 @@ collect:
     {{.Bar}} {{.Percent}}%
     {{.Done}} / {{.Total}}
     Phase average {{.Rate}}/s</blockquote>
+  scanning: Scanning
+  saving: Scan complete, saving
+  no_matches: Scan complete, no matching videos
+  completed_skipped: Saving complete (existing filenames skipped)
+  plan_too_large: 'The plan exceeds the in-memory limit of {{.Limit}} associated messages; no downloads were started.'

@@ -94,9 +94,17 @@ func (p *collectProgress) emit(final bool, err error) {
 	p.editor.Submit(req, false, final)
 }
 func (p *collectProgress) render(final bool, err error) (string, []tg.MessageEntityClass, error) {
-	state := i18nk.CollectRunning
+	state := i18nk.CollectScanning
+	if p.stats.ScanComplete {
+		state = i18nk.CollectSaving
+	}
 	if final {
 		state = i18nk.CollectCompleted
+		if p.stats.Matched == 0 {
+			state = i18nk.CollectNoMatches
+		} else if p.stats.Skipped > 0 {
+			state = i18nk.CollectCompletedSkipped
+		}
 	}
 	if err != nil {
 		state = i18nk.CollectFailed
@@ -107,6 +115,9 @@ func (p *collectProgress) render(final bool, err error) (string, []tg.MessageEnt
 	detail := p.stats.LastError
 	if err != nil && detail == "" {
 		detail = err.Error()
+	}
+	if errors.Is(err, collect.ErrPlanTooLarge) {
+		detail = i18n.T(i18nk.CollectPlanTooLarge, map[string]any{"Limit": collect.MaxPlannedMessages})
 	}
 	html := i18n.T(i18nk.CollectProgress, tgutil.EscapeHTMLTemplateData(map[string]any{
 		"ID": p.id, "State": i18n.T(state), "Scanned": p.stats.Scanned, "Matched": p.stats.Matched, "Saved": p.stats.Saved, "Skipped": p.stats.Skipped, "Failed": p.stats.Failed, "Error": detail,

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -77,5 +78,37 @@ func TestCollectProgressConcurrentCallbacksAndFinal(t *testing.T) {
 	rows[0].OnProgress(context.Background(), nil, 100, 100)
 	if len(p.items) != 0 || !p.done {
 		t.Fatal("final state not terminal")
+	}
+}
+
+func TestCollectScanAndCompletionStatesKeepExistingLayout(t *testing.T) {
+	i18n.Init("zh-Hans")
+	cases := []struct {
+		name  string
+		stats collect.Stats
+		final bool
+		err   error
+		want  string
+	}{
+		{name: "scan", want: "正在扫描"},
+		{name: "save", stats: collect.Stats{Matched: 3, ScanComplete: true}, want: "扫描完成，正在保存"},
+		{name: "success", stats: collect.Stats{Matched: 3, Saved: 3, ScanComplete: true}, final: true, want: "保存完成，全部成功"},
+		{name: "skips", stats: collect.Stats{Matched: 3, Saved: 2, Skipped: 1, ScanComplete: true}, final: true, want: "保存完成（同名文件已跳过）"},
+		{name: "empty", stats: collect.Stats{ScanComplete: true}, final: true, want: "没有匹配的视频"},
+		{name: "failure", stats: collect.Stats{Matched: 1, Failed: 1, ScanComplete: true}, final: true, err: errors.New("failed"), want: "结束（存在失败）"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &collectProgress{id: "job", stats: tc.stats}
+			text, _, err := p.render(tc.final, tc.err)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{tc.want, "已扫描消息：", "匹配视频：", "保存成功：", "同名跳过：", "失败："} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("missing %q in %q", want, text)
+				}
+			}
+		})
 	}
 }

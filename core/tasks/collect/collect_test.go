@@ -72,7 +72,7 @@ func TestAlbumCaptionAcrossPagesAndDuplicatePageItems(t *testing.T) {
 			final = s
 		}
 	}}
-	if err := task.Execute(t.Context()); err != nil {
+	if err := executeRecordedTask(t.Context(), &task); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(processed, []int{9, 10, 6}) {
@@ -97,7 +97,7 @@ func TestFailedItemDoesNotStopFollowingItems(t *testing.T) {
 			final = s
 		}
 	}}
-	if err := task.Execute(t.Context()); err == nil {
+	if err := executeRecordedTask(t.Context(), &task); err == nil {
 		t.Fatal("failure lost")
 	}
 	if final.Failed != 1 || final.Saved != 1 || final.LastError != "probe unavailable" {
@@ -109,13 +109,13 @@ func TestCancelStopsPaginationAndProcessing(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	calls := 0
 	task := Task{Tag: "#tag", Fetch: func(context.Context, int) (Page, error) {
-		return Page{Messages: []*tg.Message{video(2, 0, "#tag"), video(1, 0, "#tag")}, Next: 1}, nil
+		return Page{Messages: []*tg.Message{video(2, 0, "#tag"), video(1, 0, "#tag")}, Done: true}, nil
 	}, Process: func(context.Context, *tg.Message, []*tg.Message) (bool, error) {
 		calls++
 		cancel()
 		return false, context.Canceled
 	}}
-	if err := task.Execute(ctx); !errors.Is(err, context.Canceled) {
+	if err := executeRecordedTask(ctx, &task); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	if calls != 1 {
@@ -125,7 +125,7 @@ func TestCancelStopsPaginationAndProcessing(t *testing.T) {
 
 func TestCursorCannotLoop(t *testing.T) {
 	task := Task{Tag: "#tag", Fetch: func(context.Context, int) (Page, error) { return Page{Next: 5}, nil }}
-	if err := task.Execute(t.Context()); err == nil {
+	if err := executeRecordedTask(t.Context(), &task); err == nil {
 		t.Fatal("expected stuck cursor error")
 	}
 }
@@ -153,7 +153,7 @@ func TestPathLocksCancellationAndRelease(t *testing.T) {
 	unlock()
 }
 
-func TestLargeScanRetainsOnlyOnePage(t *testing.T) {
+func TestLargeScanStoresOnlyIDsAndReloadsAfterScan(t *testing.T) {
 	const count = 10000
 	n := count
 	processed := 0
@@ -167,7 +167,7 @@ func TestLargeScanRetainsOnlyOnePage(t *testing.T) {
 		p.Done = n == 0
 		return p, nil
 	}, Process: func(context.Context, *tg.Message, []*tg.Message) (bool, error) { processed++; return true, nil }}
-	if err := task.Execute(t.Context()); err != nil {
+	if err := executeRecordedTask(t.Context(), &task); err != nil {
 		t.Fatal(err)
 	}
 	if processed != count {
@@ -200,7 +200,7 @@ func TestCollectConcurrencyBoundAndCancelWaitsForCleanup(t *testing.T) {
 		cleaned.Add(1)
 		return false, ctx.Err()
 	}
-	go func() { finished <- task.Execute(ctx) }()
+	go func() { finished <- executeRecordedTask(ctx, task) }()
 	for range 2 {
 		select {
 		case <-started:
@@ -256,7 +256,7 @@ func TestCollectConcurrentCompletionCountsEveryOutcome(t *testing.T) {
 		}
 	}
 	done := make(chan error, 1)
-	go func() { done <- task.Execute(t.Context()) }()
+	go func() { done <- executeRecordedTask(t.Context(), task) }()
 	for range 2 {
 		select {
 		case <-started:
@@ -275,5 +275,134 @@ func TestCollectConcurrentCompletionCountsEveryOutcome(t *testing.T) {
 	}
 	if final.Scanned != 3 || final.Matched != 3 || final.Saved != 1 || final.Skipped != 1 || final.Failed != 1 {
 		t.Fatal(final)
+	}
+}
+
+// Test transport records scan responses, then reloads them by ID like Telegram.
+func executeRecordedTask(ctx context.Context, task *Task) error {
+	messages := make(map[int]*tg.Message)
+	fetch := task.Fetch
+	task.Fetch = func(ctx context.Context, offset int) (Page, error) {
+		page, err := fetch(ctx, offset)
+		for _, m := range page.Messages {
+			messages[m.ID] = m
+		}
+		return page, err
+	}
+	task.Load = func(ctx context.Context, ids []int) ([]*tg.Message, error) {
+		out := make([]*tg.Message, 0, len(ids))
+		for _, id := range ids {
+			if m := messages[id]; m != nil {
+				out = append(out, m)
+			}
+		}
+		return out, nil
+	}
+	return task.Execute(ctx)
+}
+
+func TestScanFinishesBeforeAnyLoadOrSaveAndTotalStaysFixed(t *testing.T) {
+	var scanDone bool
+	var last Stats
+	var calls int
+	task := Task{Tag: "#tag"}
+	task.Fetch = func(ctx context.Context, offset int) (Page, error) {
+		if offset == 0 {
+			return Page{Messages: []*tg.Message{video(3, 0, "#tag")}, Next: 3}, nil
+		}
+		scanDone = true
+		return Page{Messages: []*tg.Message{video(2, 0, "#tag"), video(1, 0, "#unrelated")}, Done: true}, nil
+	}
+	task.Load = func(ctx context.Context, ids []int) ([]*tg.Message, error) {
+		if !scanDone || !last.ScanComplete || last.Matched != 2 {
+			t.Fatalf("saving before completed scan: %+v", last)
+		}
+		out := []*tg.Message{}
+		// Caption changed after scanning: execute the already fixed plan.
+		for _, id := range ids {
+			out = append(out, video(id, 0, "edited"))
+		}
+		return out, nil
+	}
+	task.Process = func(context.Context, *tg.Message, []*tg.Message) (bool, error) { calls++; return false, nil }
+	task.Report = func(s Stats, final bool, err error) { last = s }
+	if err := task.Execute(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || last.Matched != 2 || last.Saved != 2 || last.Scanned != 3 {
+		t.Fatal(calls, last)
+	}
+}
+func TestScanFailureOrCancellationNeverStartsSaving(t *testing.T) {
+	for _, cancelScan := range []bool{false, true} {
+		t.Run(fmt.Sprint(cancelScan), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			task := Task{Tag: "#tag"}
+			task.Fetch = func(_ context.Context, offset int) (Page, error) {
+				if cancelScan {
+					cancel()
+					return Page{Messages: []*tg.Message{video(1, 0, "#tag")}, Done: true}, nil
+				}
+				if offset == 0 {
+					return Page{Messages: []*tg.Message{video(2, 0, "#tag")}, Next: 2}, nil
+				}
+				return Page{}, errors.New("scan failure")
+			}
+			task.Load = func(context.Context, []int) ([]*tg.Message, error) {
+				t.Fatal("loaded before scan success")
+				return nil, nil
+			}
+			task.Process = func(context.Context, *tg.Message, []*tg.Message) (bool, error) {
+				t.Fatal("saved before scan success")
+				return false, nil
+			}
+			if err := task.Execute(ctx); err == nil {
+				t.Fatal("expected scan error")
+			}
+		})
+	}
+}
+func TestMissingPlannedMessageCountsAsFailure(t *testing.T) {
+	var final Stats
+	task := Task{Tag: "#tag", Fetch: func(context.Context, int) (Page, error) {
+		return Page{Messages: []*tg.Message{video(1, 0, "#tag")}, Done: true}, nil
+	}, Load: func(context.Context, []int) ([]*tg.Message, error) { return nil, nil }, Process: func(context.Context, *tg.Message, []*tg.Message) (bool, error) {
+		t.Fatal("missing message processed")
+		return false, nil
+	}, Report: func(s Stats, f bool, _ error) {
+		if f {
+			final = s
+		}
+	}}
+	if err := task.Execute(t.Context()); err == nil {
+		t.Fatal("missing message reported success")
+	}
+	if final.Matched != 1 || final.Failed != 1 || final.Saved != 0 || !final.ScanComplete {
+		t.Fatal(final)
+	}
+}
+func TestPlanLimitStopsBeforeAnyDownload(t *testing.T) {
+	remaining := MaxPlannedMessages + 1
+	task := Task{Tag: "#tag"}
+	task.Fetch = func(context.Context, int) (Page, error) {
+		page := Page{}
+		for range PageSize {
+			if remaining == 0 {
+				break
+			}
+			page.Messages = append(page.Messages, video(remaining, 0, "#tag"))
+			remaining--
+		}
+		page.Next = remaining + 1
+		page.Done = remaining == 0
+		return page, nil
+	}
+	task.Load = func(context.Context, []int) ([]*tg.Message, error) {
+		t.Fatal("oversized plan started saving")
+		return nil, nil
+	}
+	if err := task.Execute(t.Context()); err == nil {
+		t.Fatal("plan limit not enforced")
 	}
 }
